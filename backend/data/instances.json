@@ -1,0 +1,88 @@
+{
+  "inst-sample-01": {
+    "id": "inst-sample-01",
+    "blueprint_id": "postgres-cluster",
+    "blueprint_title": "Database Gestito (PostgreSQL)",
+    "category": "Database & Storage",
+    "icon": "database",
+    "name": "db-ecommerce-stage",
+    "owner_name": "Marco Rossi (Tech Lead)",
+    "owner_email": "m.rossi@azienda.com",
+    "team": "E-Commerce Squad",
+    "cost_center": "CC-MARKET-01",
+    "environment": "staging",
+    "status": "ACTIVE",
+    "progress_percentage": 100,
+    "progress_message": "Database operativo e pronto all'uso",
+    "created_at": "2026-11-01 10:15:00",
+    "expires_at": "2026-11-20 10:15:00",
+    "ttl_days": 19,
+    "monthly_cost": 80.0,
+    "endpoints": {
+      "Host Interno": "pg-cluster-stage.internal.corp.net",
+      "Porta": "5432",
+      "Database Name": "db_ecommerce_stage",
+      "Connection URI": "postgresql://usr_ecom:****@pg-cluster-stage.internal.corp.net:5432/db_ecommerce_stage"
+    },
+    "credentials": {
+      "Utente Master": "usr_ecom_stage",
+      "Password Generata": "PgPass_9921!Enterprise#",
+      "Vault Secret Ref": "secret/data/databases/inst-sample-01"
+    },
+    "parameters": {
+      "db_size": "small",
+      "backup_retention": "7"
+    },
+    "day2_actions": [
+      "restart",
+      "backup",
+      "extend_ttl"
+    ],
+    "logs": [
+      "[10:15:00] Inizializzazione completata.",
+      "[10:15:10] Cluster attivo."
+    ]
+  },
+  "inst-sample-02": {
+    "id": "inst-sample-02",
+    "blueprint_id": "demo-environment",
+    "blueprint_title": "Ambiente Demo per Clienti",
+    "category": "Ambienti Demo",
+    "icon": "monitor-play",
+    "name": "demo-acme-corp",
+    "owner_name": "Sara Bianchi (Sales Engineer)",
+    "owner_email": "s.bianchi@azienda.com",
+    "team": "Solution Consulting",
+    "cost_center": "CC-SALES-EU",
+    "environment": "dev",
+    "status": "ACTIVE",
+    "progress_percentage": 100,
+    "progress_message": "Ambiente demo accessibile da browser",
+    "created_at": "2026-11-02 14:00:00",
+    "expires_at": "2026-11-16 14:00:00",
+    "ttl_days": 14,
+    "monthly_cost": 45.0,
+    "endpoints": {
+      "Portale Web Demo": "https://demo-acme-corp.demo.internal.company.com",
+      "Pannello Admin": "https://demo-acme-corp.demo.internal.company.com/admin"
+    },
+    "credentials": {
+      "Username": "sales-demo@acme.com",
+      "Password Temporanea": "DemoPass_Acme2026!"
+    },
+    "parameters": {
+      "customer_name": "Acme Corp",
+      "demo_profile": "standard",
+      "region": "eu-central-milan"
+    },
+    "day2_actions": [
+      "restart",
+      "extend_ttl",
+      "stop",
+      "start"
+    ],
+    "logs": [
+      "[14:00:00] Provisioning Cloud completato con successo."
+    ]
+  }
+}

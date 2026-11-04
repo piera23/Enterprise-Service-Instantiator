@@ -1,0 +1,53 @@
+version: '3.8'
+
+services:
+  # DATABASE POSTGRESQL PRINCIPALE
+  postgres:
+    image: postgres:16-alpine
+    container_name: esi-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: esi_admin
+      POSTGRES_PASSWORD: esi_secure_pass123
+      POSTGRES_DB: esi_database
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U esi_admin -d esi_database"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PIATTAFORMA ISTANZIATORE CON SUPPORTO DEBUG HOT-RELOAD & DEBUGPY
+  istanziatore:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: esi-platform
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8080:8080"              # Portale Web & API Swagger
+      - "5678:5678"              # Porta Debugger Remoto (VS Code / PyCharm debugpy)
+      - "8100-8150:8100-8150"    # Porte dinamiche container Docker istanziati
+      - "8200-8250:8200-8250"    # Porte dinamiche servizi web locali
+    environment:
+      - DATABASE_URL=postgresql://esi_admin:esi_secure_pass123@postgres:5432/esi_database
+      - JWT_SECRET_KEY=esi-super-secret-jwt-key-2026-enterprise-grade
+      - DEBUG_MODE=true          # Abilita debugger remoto su porta 5678 e hot-reload
+      - RELOAD=true              # Ricaricamento automatico del codice alle modifiche
+      - PYTHONUNBUFFERED=1
+    volumes:
+      # Socket Docker dell'host per orchestratore container reale (DooD)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Hot-Reload del codice sorgente: le modifiche a file Python/HTML si applicano al volo senza ri-buildare!
+      - ./backend:/app/backend
+      - ./frontend:/app/frontend
+      - ./backend/data:/app/backend/data
+
+volumes:
+  postgres_data:

@@ -1,0 +1,1899 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enterprise Service Instantiator | DevOps Control Plane</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <!-- Babel Standalone -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Plus Jakarta Sans', sans-serif; }
+    code, pre { font-family: 'JetBrains Mono', monospace; }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const API_BASE = window.location.protocol.startsWith("http")
+      ? window.location.origin
+      : "http://localhost:8080";
+
+    function App() {
+      // Auth State
+      const [token, setToken] = useState(localStorage.getItem("esi_token") || null);
+      const [currentUser, setCurrentUser] = useState(null);
+      const [authLoading, setAuthLoading] = useState(false);
+      const [authStep, setAuthStep] = useState("login");
+      const [loginEmail, setLoginEmail] = useState("admin@azienda.com");
+      const [loginPassword, setLoginPassword] = useState("AdminPass123!");
+      const [totpCode, setTotpCode] = useState("");
+      const [tempSessionToken, setTempSessionToken] = useState(null);
+
+      // Platform State
+      const [activeTab, setActiveTab] = useState("catalog");
+      const [blueprints, setBlueprints] = useState([]);
+      const [instances, setInstances] = useState([]);
+      const [connectors, setConnectors] = useState([]);
+      const [stats, setStats] = useState(null);
+      const [teams, setTeams] = useState([]);
+      const [usersList, setUsersList] = useState([]);
+      const [auditLogs, setAuditLogs] = useState([]);
+      const [selectedCategory, setSelectedCategory] = useState("Tutti");
+      const [searchQuery, setSearchQuery] = useState("");
+      const [pingResults, setPingResults] = useState({});
+
+      // Wizard Modal State
+      const [wizardBlueprint, setWizardBlueprint] = useState(null);
+      const [wizardStep, setWizardStep] = useState(1);
+      const [wizardForm, setWizardForm] = useState({
+        name: "",
+        team_id: "",
+        team_name: "",
+        cost_center: "",
+        environment: "dev",
+        ttl_days: 14,
+        parameters: {},
+        env_vars: [{ key: "", value: "" }],
+        vault_secret: "secret/data/common"
+      });
+      const [isSubmitting, setIsSubmitting] = useState(false);
+      const [toastMessage, setToastMessage] = useState(null);
+      const [viewingLogsInstance, setViewingLogsInstance] = useState(null);
+
+      // Backoffice Modal State
+      const [showUserModal, setShowUserModal] = useState(false);
+      const [newUserForm, setNewUserForm] = useState({ username: "", email: "", password: "", role: "developer", team_id: "" });
+      const [showTeamModal, setShowTeamModal] = useState(false);
+      const [newTeamForm, setNewTeamForm] = useState({ name: "", slug: "", cost_center: "", lead_email: "", monthly_budget_eur: 2000.0 });
+      const [showBlueprintModal, setShowBlueprintModal] = useState(false);
+      const [newBpForm, setNewBpForm] = useState({
+        id: "",
+        title: "",
+        category_name: "Database & Storage",
+        badge: "Custom DevOps",
+        icon: "server",
+        description: "",
+        connector_id: "docker-connector",
+        base_monthly_cost: 25.0,
+        inputs: []
+      });
+      const [newInputField, setNewInputField] = useState({ name: "", label: "", input_type: "text", description: "", required: true, default_value: "" });
+
+      // 2FA Setup Modal State
+      const [show2FAModal, setShow2FAModal] = useState(false);
+      const [setup2FAData, setSetup2FAData] = useState(null);
+      const [verifySetupCode, setVerifySetupCode] = useState("");
+
+      const showToast = (msg, type = "success") => {
+        setToastMessage({ text: msg, type });
+        setTimeout(() => setToastMessage(null), 4000);
+      };
+
+      const authHeaders = () => {
+        return token ? { "Authorization": `Bearer ${token}` } : {};
+      };
+
+      // Check current user
+      const checkUser = async () => {
+        if (!token) return;
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/auth/me`, { headers: authHeaders() });
+          if (res.ok) {
+            const data = await res.json();
+            setCurrentUser(data);
+          } else {
+            handleLogout();
+          }
+        } catch (err) {
+          console.error("Auth check failed:", err);
+        }
+      };
+
+      const handleLogin = async (e) => {
+        e.preventDefault();
+        setAuthLoading(true);
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/auth/login`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: loginEmail, password: loginPassword })
+          });
+          const data = await res.json();
+          if (res.ok) {
+            if (data.requires_2fa) {
+              setTempSessionToken(data.session_token);
+              setAuthStep("2fa_prompt");
+              showToast("Inserisci il codice 2FA dall'app Authenticator", "info");
+            } else {
+              localStorage.setItem("esi_token", data.access_token);
+              setToken(data.access_token);
+              setCurrentUser(data.user);
+              showToast("Autenticazione completata con successo!");
+            }
+          } else {
+            alert(data.detail || "Credenziali non corrette");
+          }
+        } catch (err) {
+          alert(`Errore di connessione: ${err.message}`);
+        } finally {
+          setAuthLoading(false);
+        }
+      };
+
+      const handleVerify2FA = async (e) => {
+        e.preventDefault();
+        setAuthLoading(true);
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/auth/verify-2fa`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: loginEmail, session_token: tempSessionToken, code: totpCode })
+          });
+          const data = await res.json();
+          if (res.ok) {
+            localStorage.setItem("esi_token", data.access_token);
+            setToken(data.access_token);
+            setCurrentUser(data.user);
+            setAuthStep("login");
+            setTotpCode("");
+            showToast("2FA verificato! Accesso garantito.");
+          } else {
+            alert(data.detail || "Codice 2FA errato");
+          }
+        } catch (err) {
+          alert(`Errore: ${err.message}`);
+        } finally {
+          setAuthLoading(false);
+        }
+      };
+
+      const handleLogout = () => {
+        localStorage.removeItem("esi_token");
+        setToken(null);
+        setCurrentUser(null);
+        setAuthStep("login");
+      };
+
+      // 2FA Setup
+      const handleStart2FASetup = async () => {
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/auth/2fa/setup`, { headers: authHeaders() });
+          if (res.ok) {
+            setSetup2FAData(await res.json());
+            setShow2FAModal(true);
+          }
+        } catch (err) {
+          alert(`Errore 2FA: ${err.message}`);
+        }
+      };
+
+      const handleConfirm2FAEnable = async () => {
+        if (!verifySetupCode) return alert("Inserisci il codice generato dall'app");
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/auth/2fa/enable`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({ secret: setup2FAData.secret, code: verifySetupCode })
+          });
+          if (res.ok) {
+            showToast("2FA abilitato con successo!");
+            setShow2FAModal(false);
+            setVerifySetupCode("");
+            checkUser();
+          } else {
+            const err = await res.json();
+            alert(err.detail);
+          }
+        } catch (err) {
+          alert(`Errore: ${err.message}`);
+        }
+      };
+
+      // Fetch Data
+      const fetchData = async () => {
+        try {
+          const [bpRes, instRes, connRes, statsRes, teamsRes] = await Promise.all([
+            fetch(`${API_BASE}/api/v1/catalog/blueprints`),
+            fetch(`${API_BASE}/api/v1/instances`),
+            fetch(`${API_BASE}/api/v1/connectors`),
+            fetch(`${API_BASE}/api/v1/stats`),
+            fetch(`${API_BASE}/api/v1/backoffice/teams`, { headers: authHeaders() }).catch(() => null)
+          ]);
+          if (bpRes && bpRes.ok) setBlueprints(await bpRes.json());
+          if (instRes && instRes.ok) setInstances(await instRes.json());
+          if (connRes && connRes.ok) setConnectors(await connRes.json());
+          if (statsRes && statsRes.ok) setStats(await statsRes.json());
+          if (teamsRes && teamsRes.ok) setTeams(await teamsRes.json());
+        } catch (err) {
+          console.error("Errore fetch API:", err);
+        }
+      };
+
+      const fetchBackofficeData = async () => {
+        if (!token) return;
+        try {
+          const [uRes, aRes] = await Promise.all([
+            fetch(`${API_BASE}/api/v1/backoffice/users`, { headers: authHeaders() }),
+            fetch(`${API_BASE}/api/v1/backoffice/audit-logs`, { headers: authHeaders() })
+          ]);
+          if (uRes.ok) setUsersList(await uRes.json());
+          if (aRes.ok) setAuditLogs(await aRes.json());
+        } catch (err) {
+          console.error("Errore fetch backoffice:", err);
+        }
+      };
+
+      useEffect(() => {
+        if (token) {
+          checkUser();
+          fetchData();
+          fetchBackofficeData();
+          const interval = setInterval(() => {
+            fetchData();
+            if (activeTab === "backoffice_users" || activeTab === "audit_logs") {
+              fetchBackofficeData();
+            }
+          }, 3500);
+          return () => clearInterval(interval);
+        }
+      }, [token, activeTab]);
+
+      useEffect(() => {
+        if (window.lucide) {
+          window.lucide.createIcons();
+        }
+      }, [blueprints, instances, activeTab, wizardBlueprint, wizardStep, currentUser, authStep, teams, usersList, auditLogs]);
+
+      // Dynamic cost calculator
+      const calculateWizardCost = () => {
+        if (!wizardBlueprint) return 0;
+        let cost = wizardBlueprint.base_monthly_cost;
+        for (const field of wizardBlueprint.fields) {
+          if (field.type === "select" && field.options) {
+            const val = wizardForm.parameters[field.name] || field.default;
+            const opt = field.options.find(o => o.value === val);
+            if (opt && opt.cost_multiplier) cost *= opt.cost_multiplier;
+          }
+        }
+        return Math.round(cost * 100) / 100;
+      };
+
+      // Open Wizard with real team preselected
+      const openWizard = (bp) => {
+        const initialParams = {};
+        bp.fields.forEach(f => {
+          initialParams[f.name] = f.default !== undefined ? f.default : "";
+        });
+        const firstTeam = teams.length > 0 ? teams[0] : null;
+        setWizardBlueprint(bp);
+        setWizardStep(1);
+        setWizardForm({
+          name: "",
+          team_id: firstTeam ? firstTeam.id : "",
+          team_name: firstTeam ? firstTeam.name : "Platform & DevOps Core",
+          cost_center: firstTeam ? firstTeam.cost_center : "CC-DEVOPS-01",
+          environment: "dev",
+          ttl_days: 14,
+          parameters: initialParams,
+          env_vars: [{ key: "ENV_STAGE", value: "dev" }],
+          vault_secret: "secret/data/database/credentials"
+        });
+      };
+
+      const handleProvisionSubmit = async () => {
+        setIsSubmitting(true);
+        try {
+          const envsObj = {};
+          wizardForm.env_vars.forEach(ev => {
+            if (ev.key.trim()) envsObj[ev.key.trim()] = ev.value;
+          });
+
+          const payload = {
+            blueprint_id: wizardBlueprint.id,
+            name: wizardForm.name,
+            owner_name: currentUser?.username || "DevOps Admin",
+            owner_email: currentUser?.email || "admin@azienda.com",
+            team: wizardForm.team_name,
+            cost_center: wizardForm.cost_center,
+            environment: wizardForm.environment,
+            ttl_days: parseInt(wizardForm.ttl_days),
+            parameters: {
+              ...wizardForm.parameters,
+              env_vars: envsObj,
+              vault_secret: wizardForm.vault_secret
+            }
+          };
+
+          const res = await fetch(`${API_BASE}/api/v1/instances`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify(payload)
+          });
+
+          if (res.ok) {
+            const created = await res.json();
+            setWizardBlueprint(null);
+            setActiveTab("instances");
+            showToast(`Richiesta "${created.name}" inviata al motore di orchestrazione!`);
+            fetchData();
+          } else {
+            const err = await res.json();
+            alert(`Errore: ${err.detail || "Impossibile completare la richiesta"}`);
+          }
+        } catch (err) {
+          alert(`Errore: ${err.message}`);
+        } finally {
+          setIsSubmitting(false);
+        }
+      };
+
+      const handlePing = async (instanceId) => {
+        setPingResults(prev => ({ ...prev, [instanceId]: { loading: true } }));
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/instances/${instanceId}/ping`, { method: "POST" });
+          const data = await res.json();
+          setPingResults(prev => ({ ...prev, [instanceId]: { ...data, loading: false } }));
+          showToast(data.message, data.online ? "success" : "error");
+        } catch (err) {
+          setPingResults(prev => ({ ...prev, [instanceId]: { online: false, message: err.message, loading: false } }));
+        }
+      };
+
+      const handleAction = async (instanceId, action, params = null) => {
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/instances/${instanceId}/actions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({ action, parameters: params })
+          });
+          if (res.ok) {
+            const data = await res.json();
+            showToast(data.message || `Azione ${action} eseguita!`);
+            fetchData();
+          } else {
+            const err = await res.json();
+            alert(`Errore: ${err.detail}`);
+          }
+        } catch (err) {
+          alert(`Errore: ${err.message}`);
+        }
+      };
+
+      const handleDelete = async (instanceId, name) => {
+        if (!confirm(`Sei sicuro di voler de-provisionare "${name}"?`)) return;
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/instances/${instanceId}`, {
+            method: "DELETE",
+            headers: authHeaders()
+          });
+          if (res.ok) {
+            showToast(`Istanza "${name}" de-provisionata ed eliminata.`);
+            fetchData();
+          }
+        } catch (err) {
+          alert(`Errore: ${err.message}`);
+        }
+      };
+
+      // Backoffice: User Creation
+      const handleCreateUser = async (e) => {
+        e.preventDefault();
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/backoffice/users`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify(newUserForm)
+          });
+          if (res.ok) {
+            showToast(`Utente ${newUserForm.username} creato!`);
+            setShowUserModal(false);
+            setNewUserForm({ username: "", email: "", password: "", role: "developer", team_id: "" });
+            fetchBackofficeData();
+          } else {
+            const err = await res.json();
+            alert(err.detail);
+          }
+        } catch (err) {
+          alert(err.message);
+        }
+      };
+
+      // Backoffice: Team Creation
+      const handleCreateTeam = async (e) => {
+        e.preventDefault();
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/backoffice/teams`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify(newTeamForm)
+          });
+          if (res.ok) {
+            showToast(`Team ${newTeamForm.name} creato!`);
+            setShowTeamModal(false);
+            setNewTeamForm({ name: "", slug: "", cost_center: "", lead_email: "", monthly_budget_eur: 2000.0 });
+            fetchData();
+          } else {
+            const err = await res.json();
+            alert(err.detail);
+          }
+        } catch (err) {
+          alert(err.message);
+        }
+      };
+
+      // Backoffice: Blueprint Creation
+      const handleCreateBlueprint = async (e) => {
+        e.preventDefault();
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/backoffice/blueprints`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify(newBpForm)
+          });
+          if (res.ok) {
+            showToast(`Blueprint ${newBpForm.title} creato e pubblicato!`);
+            setShowBlueprintModal(false);
+            setNewBpForm({
+              id: "",
+              title: "",
+              category_name: "Database & Storage",
+              badge: "Custom DevOps",
+              icon: "server",
+              description: "",
+              connector_id: "docker-connector",
+              base_monthly_cost: 25.0,
+              inputs: []
+            });
+            fetchData();
+          } else {
+            const err = await res.json();
+            alert(err.detail);
+          }
+        } catch (err) {
+          alert(err.message);
+        }
+      };
+
+      const handleAddInputField = () => {
+        if (!newInputField.name || !newInputField.label) return alert("Inserisci nome e label per il campo");
+        setNewBpForm(prev => ({
+          ...prev,
+          inputs: [...prev.inputs, { ...newInputField, display_order: prev.inputs.length + 1 }]
+        }));
+        setNewInputField({ name: "", label: "", input_type: "text", description: "", required: true, default_value: "" });
+      };
+
+      const categories = ["Tutti", ...new Set(blueprints.map(b => b.category))];
+      const filteredBlueprints = blueprints.filter(b => {
+        const matchesCategory = selectedCategory === "Tutti" || b.category === selectedCategory;
+        const matchesSearch = b.title.toLowerCase().includes(searchQuery.toLowerCase()) || 
+                              b.description.toLowerCase().includes(searchQuery.toLowerCase());
+        return matchesCategory && matchesSearch;
+      });
+
+      const isAdminOrDevOps = currentUser?.role === "admin" || currentUser?.role === "devops_lead";
+
+      // ----------------------------------------------------------------------
+      // LOGIN / 2FA VIEW
+      // ----------------------------------------------------------------------
+      if (!token) {
+        return (
+          <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 flex items-center justify-center p-4">
+            <div className="max-w-md w-full bg-slate-900/90 border border-slate-800 rounded-2xl shadow-2xl p-8 backdrop-blur-md">
+              <div className="text-center mb-8">
+                <div className="w-14 h-14 rounded-2xl bg-gradient-to-tr from-indigo-500 to-cyan-400 mx-auto flex items-center justify-center text-white shadow-lg shadow-indigo-500/20 mb-3">
+                  <i data-lucide="layers" className="w-7 h-7"></i>
+                </div>
+                <h1 className="text-xl font-extrabold text-white tracking-tight">Enterprise Service Instantiator</h1>
+                <p className="text-xs text-slate-400 mt-1">DevOps Platform Engineering & Control Plane</p>
+                <div className="inline-flex items-center gap-1.5 mt-3 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  PostgreSQL 16 Engine &bull; 2FA TOTP Secured
+                </div>
+              </div>
+
+              {authStep === "login" && (
+                <form onSubmit={handleLogin} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                      Email Aziendale
+                    </label>
+                    <input
+                      type="email"
+                      required
+                      value={loginEmail}
+                      onChange={e => setLoginEmail(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-300 uppercase tracking-wider mb-1">
+                      Password
+                    </label>
+                    <input
+                      type="password"
+                      required
+                      value={loginPassword}
+                      onChange={e => setLoginPassword(e.target.value)}
+                      className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-lg shadow-lg transition flex items-center justify-center gap-2"
+                  >
+                    {authLoading ? "Autenticazione in corso..." : "Accedi al Portale"}
+                  </button>
+
+                  <div className="pt-4 border-t border-slate-800 text-center">
+                    <p className="text-xs text-slate-500 mb-2">Account Pre-configurati per il Test:</p>
+                    <div className="flex flex-col gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => { setLoginEmail("admin@azienda.com"); setLoginPassword("AdminPass123!"); }}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-mono text-left flex justify-between"
+                      >
+                        <span>admin@azienda.com</span>
+                        <span className="text-indigo-400 font-bold">Admin DevOps</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setLoginEmail("mario.rossi@azienda.com"); setLoginPassword("DevPass123!"); }}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-mono text-left flex justify-between"
+                      >
+                        <span>mario.rossi@azienda.com</span>
+                        <span className="text-emerald-400 font-bold">Developer Squad</span>
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              )}
+
+              {authStep === "2fa_prompt" && (
+                <form onSubmit={handleVerify2FA} className="space-y-4">
+                  <div className="bg-indigo-500/10 border border-indigo-500/30 rounded-xl p-4 text-center">
+                    <i data-lucide="smartphone" className="w-8 h-8 text-indigo-400 mx-auto mb-2"></i>
+                    <h3 className="font-bold text-sm text-white">Autenticazione a Due Fattori (2FA)</h3>
+                    <p className="text-xs text-indigo-200 mt-1">
+                      Inserisci il codice temporaneo a 6 cifre dall'app Google / Microsoft Authenticator.
+                    </p>
+                  </div>
+
+                  <div>
+                    <input
+                      type="text"
+                      maxLength="6"
+                      autoFocus
+                      required
+                      placeholder="123456"
+                      value={totpCode}
+                      onChange={e => setTotpCode(e.target.value.trim())}
+                      className="w-full text-center text-2xl tracking-widest font-mono py-3 bg-slate-950 border border-indigo-500 rounded-lg text-indigo-300 focus:outline-none"
+                    />
+                  </div>
+
+                  <button
+                    type="submit"
+                    disabled={authLoading || totpCode.length !== 6}
+                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-sm rounded-lg shadow-lg transition"
+                  >
+                    Verifica & Accedi
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setAuthStep("login")}
+                    className="w-full text-xs text-slate-400 hover:text-slate-200 text-center"
+                  >
+                    &larr; Torna indietro
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        );
+      }
+
+      // ----------------------------------------------------------------------
+      // MAIN DASHBOARD (AUTHENTICATED)
+      // ----------------------------------------------------------------------
+      return (
+        <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
+          {/* Header */}
+          <header className="bg-slate-900 border-b border-slate-800 sticky top-0 z-30 shadow-md">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+              <div className="flex justify-between items-center h-16">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-500 to-cyan-400 flex items-center justify-center text-white shadow-md shadow-indigo-500/20">
+                    <i data-lucide="layers" className="w-5 h-5"></i>
+                  </div>
+                  <div>
+                    <h1 className="font-bold text-base tracking-tight text-white flex items-center gap-2">
+                      Enterprise Service Instantiator
+                      <span className="bg-indigo-500/20 text-indigo-300 text-[10px] px-2 py-0.5 rounded-full font-bold border border-indigo-500/30">
+                        DevOps Platform
+                      </span>
+                    </h1>
+                    <p className="text-[11px] text-slate-400">PostgreSQL DB Engine &bull; Multi-Tenant &bull; Dynamic Blueprints</p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-4">
+                  <div className="hidden sm:flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                    PostgreSQL 16
+                  </div>
+
+                  <button
+                    onClick={currentUser?.is_2fa_enabled ? () => alert("2FA già attivo sul tuo account!") : handleStart2FASetup}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${
+                      currentUser?.is_2fa_enabled
+                        ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30"
+                        : "bg-amber-500/10 text-amber-300 border-amber-500/30 hover:bg-amber-500/20"
+                    }`}
+                  >
+                    <i data-lucide={currentUser?.is_2fa_enabled ? "shield-check" : "shield-alert"} className="w-3.5 h-3.5"></i>
+                    <span>2FA: {currentUser?.is_2fa_enabled ? "Attivo" : "Non attivo"}</span>
+                  </button>
+
+                  <a 
+                    href={`${API_BASE}/docs`} 
+                    target="_blank" 
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-300 hover:bg-slate-700 transition"
+                  >
+                    <i data-lucide="code-2" className="w-3.5 h-3.5 text-indigo-400"></i>
+                    Swagger API
+                  </a>
+
+                  <div className="h-6 w-px bg-slate-800"></div>
+
+                  <div className="flex items-center gap-3">
+                    <div className="text-right hidden sm:block">
+                      <div className="text-xs font-bold text-white">{currentUser?.username}</div>
+                      <div className="text-[10px] uppercase font-semibold text-indigo-400">{currentUser?.role}</div>
+                    </div>
+                    <button
+                      onClick={handleLogout}
+                      className="p-2 text-slate-400 hover:text-rose-400 rounded-lg hover:bg-slate-800 transition"
+                      title="Disconnetti"
+                    >
+                      <i data-lucide="log-out" className="w-4 h-4"></i>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Navigation Tabs */}
+              <nav className="flex space-x-6 -mb-px overflow-x-auto">
+                <button
+                  onClick={() => setActiveTab("catalog")}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs flex items-center gap-2 transition shrink-0 ${
+                    activeTab === "catalog" ? "border-indigo-500 text-indigo-400" : "border-transparent text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <i data-lucide="box" className="w-4 h-4"></i>
+                  Catalogo Servizi ({blueprints.length})
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("instances")}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs flex items-center gap-2 transition shrink-0 ${
+                    activeTab === "instances" ? "border-indigo-500 text-indigo-400" : "border-transparent text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <i data-lucide="server" className="w-4 h-4"></i>
+                  Istanze & Container ({instances.length})
+                </button>
+
+                <button
+                  onClick={() => setActiveTab("finops")}
+                  className={`py-3 px-1 border-b-2 font-medium text-xs flex items-center gap-2 transition shrink-0 ${
+                    activeTab === "finops" ? "border-indigo-500 text-indigo-400" : "border-transparent text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  <i data-lucide="trending-down" className="w-4 h-4"></i>
+                  FinOps & Quote
+                </button>
+
+                {/* Backoffice Tabs riservate ad Admin & DevOps Lead */}
+                {isAdminOrDevOps && (
+                  <>
+                    <button
+                      onClick={() => { setActiveTab("backoffice_users"); fetchBackofficeData(); }}
+                      className={`py-3 px-1 border-b-2 font-medium text-xs flex items-center gap-2 transition shrink-0 ${
+                        activeTab === "backoffice_users" ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      <i data-lucide="users" className="w-4 h-4 text-cyan-400"></i>
+                      Backoffice: Utenti & Team
+                    </button>
+
+                    <button
+                      onClick={() => setActiveTab("blueprint_studio")}
+                      className={`py-3 px-1 border-b-2 font-medium text-xs flex items-center gap-2 transition shrink-0 ${
+                        activeTab === "blueprint_studio" ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      <i data-lucide="sparkles" className="w-4 h-4 text-cyan-400"></i>
+                      Blueprint Studio (Crea Template)
+                    </button>
+
+                    <button
+                      onClick={() => { setActiveTab("audit_logs"); fetchBackofficeData(); }}
+                      className={`py-3 px-1 border-b-2 font-medium text-xs flex items-center gap-2 transition shrink-0 ${
+                        activeTab === "audit_logs" ? "border-cyan-500 text-cyan-400" : "border-transparent text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      <i data-lucide="shield-check" className="w-4 h-4 text-cyan-400"></i>
+                      Audit Trail Logs
+                    </button>
+                  </>
+                )}
+              </nav>
+            </div>
+          </header>
+
+          {/* Toast */}
+          {toastMessage && (
+            <div className="fixed bottom-6 right-6 z-50 bg-indigo-950 border border-indigo-500/50 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center gap-3">
+              <i data-lucide="check-circle" className="w-5 h-5 text-emerald-400"></i>
+              <span className="text-sm font-medium">{toastMessage.text}</span>
+            </div>
+          )}
+
+          {/* Main Area */}
+          <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1 w-full">
+            
+            {/* TAB 1: CATALOGO SERVIZI */}
+            {activeTab === "catalog" && (
+              <div>
+                <div className="flex flex-col sm:flex-row gap-4 justify-between items-center mb-6">
+                  <div className="flex flex-wrap gap-2 w-full sm:w-auto">
+                    {categories.map(cat => (
+                      <button
+                        key={cat}
+                        onClick={() => setSelectedCategory(cat)}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                          selectedCategory === cat
+                            ? "bg-indigo-600 text-white shadow-sm"
+                            : "bg-slate-900 text-slate-400 border border-slate-800 hover:bg-slate-800"
+                        }`}
+                      >
+                        {cat}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="relative w-full sm:w-72">
+                    <input
+                      type="text"
+                      placeholder="Cerca template nel catalogo..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="w-full pl-9 pr-4 py-2 rounded-lg border border-slate-800 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-900 text-white"
+                    />
+                    <div className="absolute left-3 top-2.5 text-slate-500">
+                      <i data-lucide="search" className="w-4 h-4"></i>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {filteredBlueprints.map(bp => (
+                    <div 
+                      key={bp.id}
+                      className="bg-slate-900/90 rounded-xl border border-slate-800 hover:border-indigo-500/60 transition p-6 flex flex-col justify-between"
+                    >
+                      <div>
+                        <div className="flex justify-between items-start mb-4">
+                          <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                            <i data-lucide={bp.icon} className="w-6 h-6"></i>
+                          </div>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full uppercase bg-indigo-500/10 text-indigo-300 border border-indigo-500/20">
+                            {bp.badge}
+                          </span>
+                        </div>
+
+                        <div className="text-[11px] font-bold text-indigo-400 uppercase tracking-wider mb-1">
+                          {bp.category}
+                        </div>
+                        <h3 className="font-bold text-base text-white mb-2">
+                          {bp.title}
+                        </h3>
+                        <p className="text-slate-400 text-xs mb-4 leading-relaxed">
+                          {bp.description}
+                        </p>
+                      </div>
+
+                      <div className="pt-4 border-t border-slate-800">
+                        <div className="flex justify-between items-center mb-4 text-xs text-slate-400">
+                          <span className="flex items-center gap-1 text-[11px]">
+                            <i data-lucide="sliders" className="w-3.5 h-3.5 text-cyan-400"></i>
+                            {bp.fields.length} Parametri Configurabili
+                          </span>
+                          <span className="text-slate-300 font-semibold">
+                            €{bp.base_monthly_cost.toFixed(2)}/m
+                          </span>
+                        </div>
+
+                        <button
+                          onClick={() => openWizard(bp)}
+                          className="w-full py-2.5 px-4 bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold text-xs rounded-lg transition flex items-center justify-center gap-2"
+                        >
+                          <span>Configura & Istanzia</span>
+                          <i data-lucide="arrow-right" className="w-3.5 h-3.5"></i>
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 2: ISTANZE & CONTAINER ATTIVI */}
+            {activeTab === "instances" && (
+              <div>
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h2 className="text-xl font-bold text-white">Servizi & Risorse Istanziate</h2>
+                    <p className="text-xs text-slate-400">Istanze live con porte dinamiche, healthcheck e Day-2 operations.</p>
+                  </div>
+                  <button
+                    onClick={() => setActiveTab("catalog")}
+                    className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-xs font-semibold hover:bg-indigo-500"
+                  >
+                    + Istanzia Nuova Risorsa
+                  </button>
+                </div>
+
+                {instances.length === 0 ? (
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-12 text-center max-w-lg mx-auto">
+                    <p className="text-xs text-slate-400 mb-4">Nessun servizio attivo.</p>
+                    <button onClick={() => setActiveTab("catalog")} className="px-4 py-2 bg-indigo-600 text-white text-xs font-bold rounded">
+                      Apri Catalogo
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {instances.map(inst => (
+                      <div key={inst.id} className="bg-slate-900/90 rounded-xl border border-slate-800 p-6 shadow-sm">
+                        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 mb-4">
+                          <div className="flex items-start gap-4">
+                            <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center shrink-0">
+                              <i data-lucide={inst.icon || "server"} className="w-6 h-6"></i>
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                <h3 className="font-bold text-base text-white">{inst.name}</h3>
+                                <span className="text-xs font-semibold text-indigo-400 bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                                  {inst.blueprint_title}
+                                </span>
+                                <span className="text-xs font-bold uppercase px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                                  {inst.environment}
+                                </span>
+                              </div>
+                              <div className="text-xs text-slate-400 flex flex-wrap gap-x-4 gap-y-1">
+                                <span>Owner: <strong className="text-slate-200">{inst.owner_name}</strong></span>
+                                <span>Team: <strong className="text-slate-200">{inst.team}</strong></span>
+                                <span>Costo: <strong className="text-indigo-400">€{inst.monthly_cost.toFixed(2)}/mese</strong></span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-3">
+                            {inst.status === "ACTIVE" && (
+                              <div className="flex items-center gap-2 bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-3 py-1.5 rounded-full text-xs font-semibold">
+                                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                <span>Attivo & Operativo</span>
+                              </div>
+                            )}
+                            {inst.status === "PENDING" && (
+                              <div className="flex items-center gap-2 bg-blue-500/10 text-blue-400 border border-blue-500/20 px-3 py-1.5 rounded-full text-xs font-semibold">
+                                <i data-lucide="loader-2" className="w-4 h-4 animate-spin text-blue-400"></i>
+                                <span>In Coda ({inst.progress_percentage}%)</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {inst.status === "ACTIVE" && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4 bg-slate-950 p-4 rounded-xl border border-slate-800 text-xs font-mono">
+                            <div>
+                              <div className="font-bold text-slate-300 mb-2 font-sans flex items-center gap-1.5">
+                                <i data-lucide="link" className="w-3.5 h-3.5 text-indigo-400"></i>
+                                Endpoint di Connessione
+                              </div>
+                              <div className="space-y-1.5">
+                                {Object.entries(inst.endpoints).map(([k, v]) => (
+                                  <div key={k} className="flex items-center justify-between bg-slate-900 px-2.5 py-1.5 rounded border border-slate-800">
+                                    <span className="text-slate-400">{k}:</span>
+                                    {v.startsWith("http") ? (
+                                      <a href={v} target="_blank" rel="noreferrer" className="text-cyan-400 font-bold hover:underline">
+                                        Apri Servizio &rarr;
+                                      </a>
+                                    ) : (
+                                      <span className="text-slate-200 font-bold">{v}</span>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div>
+                              <div className="font-bold text-slate-300 mb-2 font-sans flex items-center gap-1.5">
+                                <i data-lucide="key" className="w-3.5 h-3.5 text-emerald-400"></i>
+                                Credenziali & Segreti Vault
+                              </div>
+                              <div className="space-y-1.5">
+                                {Object.entries(inst.credentials).map(([k, v]) => (
+                                  <div key={k} className="flex items-center justify-between bg-slate-900 px-2.5 py-1.5 rounded border border-slate-800">
+                                    <span className="text-slate-400">{k}:</span>
+                                    <span className="text-emerald-300 font-bold">{v}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pt-3 border-t border-slate-800 text-xs">
+                          <div className="text-slate-400 flex items-center gap-4">
+                            <span>Creato: {inst.created_at}</span>
+                            <span className="text-amber-400">Scadenza: {inst.expires_at}</span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            {inst.status === "ACTIVE" && (
+                              <>
+                                <button
+                                  onClick={() => handlePing(inst.id)}
+                                  className="px-2.5 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-semibold rounded flex items-center gap-1"
+                                >
+                                  <i data-lucide="radio" className="w-3.5 h-3.5"></i>
+                                  {pingResults[inst.id]?.loading ? "Ping..." : "Test Connessione"}
+                                </button>
+                                {pingResults[inst.id] && !pingResults[inst.id].loading && (
+                                  <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                                    pingResults[inst.id].online ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/20 text-rose-300"
+                                  }`}>
+                                    {pingResults[inst.id].online ? `● ${pingResults[inst.id].latency_ms}ms` : "● Offline"}
+                                  </span>
+                                )}
+
+                                <button
+                                  onClick={() => handleAction(inst.id, "restart")}
+                                  className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold rounded flex items-center gap-1"
+                                >
+                                  <i data-lucide="rotate-cw" className="w-3.5 h-3.5"></i>
+                                  Riavvia
+                                </button>
+                              </>
+                            )}
+
+                            <button
+                              onClick={() => setViewingLogsInstance(inst)}
+                              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded flex items-center gap-1"
+                            >
+                              <i data-lucide="file-text" className="w-3.5 h-3.5"></i>
+                              Log
+                            </button>
+
+                            <button
+                              onClick={() => handleDelete(inst.id, inst.name)}
+                              className="px-2.5 py-1.5 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 rounded flex items-center gap-1"
+                            >
+                              <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
+                              Elimina
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 3: BACKOFFICE - GESTIONE UTENTI & TEAM (IAM & MULTI-TENANCY) */}
+            {activeTab === "backoffice_users" && isAdminOrDevOps && (
+              <div className="space-y-8">
+                {/* Sezione Utenti */}
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                        <i data-lucide="users" className="w-5 h-5 text-cyan-400"></i>
+                        Gestione Utenti Aziendali (IAM)
+                      </h2>
+                      <p className="text-xs text-slate-400">Crea nuovi account, assegna i ruoli e gestisci le policy di sicurezza.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowUserModal(true)}
+                      className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5"
+                    >
+                      <i data-lucide="user-plus" className="w-4 h-4"></i>
+                      Nuovo Utente
+                    </button>
+                  </div>
+
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                    <table className="w-full text-left text-xs text-slate-300">
+                      <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
+                        <tr>
+                          <th className="p-3.5">Username / Email</th>
+                          <th className="p-3.5">Ruolo</th>
+                          <th className="p-3.5">Team di Appartenenza</th>
+                          <th className="p-3.5">Sicurezza 2FA</th>
+                          <th className="p-3.5">Ultimo Accesso</th>
+                          <th className="p-3.5 text-right">Azioni</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800">
+                        {usersList.map(u => (
+                          <tr key={u.id} className="hover:bg-slate-800/50">
+                            <td className="p-3.5">
+                              <div className="font-bold text-white">{u.username}</div>
+                              <div className="text-[11px] text-slate-500">{u.email}</div>
+                            </td>
+                            <td className="p-3.5">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                                u.role === "admin" ? "bg-rose-500/20 text-rose-300" :
+                                u.role === "devops_lead" ? "bg-indigo-500/20 text-indigo-300" : "bg-slate-800 text-slate-300"
+                              }`}>
+                                {u.role}
+                              </span>
+                            </td>
+                            <td className="p-3.5 font-semibold text-slate-300">{u.team_name}</td>
+                            <td className="p-3.5">
+                              {u.is_2fa_enabled ? (
+                                <span className="text-emerald-400 font-bold flex items-center gap-1">
+                                  <i data-lucide="check-circle" className="w-3.5 h-3.5"></i> Abilitato
+                                </span>
+                              ) : (
+                                <span className="text-amber-400">Non attivo</span>
+                              )}
+                            </td>
+                            <td className="p-3.5 text-slate-400 font-mono text-[11px]">{u.last_login}</td>
+                            <td className="p-3.5 text-right">
+                              {u.id !== currentUser?.id && (
+                                <button
+                                  onClick={async () => {
+                                    if (confirm(`Eliminare l'utente ${u.email}?`)) {
+                                      await fetch(`${API_BASE}/api/v1/backoffice/users/${u.id}`, { method: "DELETE", headers: authHeaders() });
+                                      fetchBackofficeData();
+                                    }
+                                  }}
+                                  className="text-rose-400 hover:text-rose-300 font-semibold"
+                                >
+                                  Elimina
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Sezione Team & Budget FinOps */}
+                <div>
+                  <div className="flex justify-between items-center mb-4">
+                    <div>
+                      <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                        <i data-lucide="layers" className="w-5 h-5 text-indigo-400"></i>
+                        Team, Squad & Budget FinOps
+                      </h2>
+                      <p className="text-xs text-slate-400">Isolamento multi-tenancy e quote di spesa massima per ciascun reparto.</p>
+                    </div>
+                    <button
+                      onClick={() => setShowTeamModal(true)}
+                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5"
+                    >
+                      <i data-lucide="plus" className="w-4 h-4"></i>
+                      Nuovo Team
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {teams.map(t => (
+                      <div key={t.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5">
+                        <div className="flex justify-between items-start mb-2">
+                          <h3 className="font-bold text-base text-white">{t.name}</h3>
+                          <span className="font-mono text-xs bg-slate-800 text-slate-300 px-2 py-0.5 rounded">
+                            {t.cost_center}
+                          </span>
+                        </div>
+                        <div className="text-xs text-slate-400 mb-4">
+                          Lead: <strong>{t.lead_email}</strong> &bull; Membri: <strong>{t.members_count}</strong>
+                        </div>
+                        <div className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
+                          <div className="flex justify-between text-xs font-semibold mb-1">
+                            <span className="text-slate-400">Consumo Budget Mensile:</span>
+                            <span className="text-white">€{t.current_spend_eur} / €{t.monthly_budget_eur} ({t.budget_usage_pct}%)</span>
+                          </div>
+                          <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                            <div 
+                              className={`h-2 rounded-full ${t.budget_usage_pct > 80 ? "bg-rose-500" : "bg-indigo-500"}`}
+                              style={{ width: `${Math.min(t.budget_usage_pct, 100)}%` }}
+                            ></div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 4: BLUEPRINT STUDIO (CREA TEMPLATE SENZA CODICE) */}
+            {activeTab === "blueprint_studio" && isAdminOrDevOps && (
+              <div>
+                <div className="flex justify-between items-center mb-6">
+                  <div>
+                    <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                      <i data-lucide="sparkles" className="w-5 h-5 text-cyan-400"></i>
+                      Blueprint Studio (Template Designer)
+                    </h2>
+                    <p className="text-xs text-slate-400">Crea e pubblica nuovi servizi self-service definendo campi e connettori graficamente.</p>
+                  </div>
+                  <button
+                    onClick={() => setShowBlueprintModal(true)}
+                    className="px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5"
+                  >
+                    <i data-lucide="plus" className="w-4 h-4"></i>
+                    Nuovo Blueprint
+                  </button>
+                </div>
+
+                <div className="space-y-4">
+                  {blueprints.map(bp => (
+                    <div key={bp.id} className="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="font-bold text-base text-white">{bp.title}</h3>
+                          <span className="text-xs font-mono bg-slate-800 text-slate-400 px-2 py-0.5 rounded">
+                            {bp.id}
+                          </span>
+                          <span className="text-xs bg-indigo-500/10 text-indigo-400 px-2 py-0.5 rounded">
+                            {bp.category}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-400">{bp.description}</p>
+                        <div className="flex gap-4 text-[11px] text-slate-500 mt-2">
+                          <span>Connettore: <strong className="text-slate-300">{bp.connector_id}</strong></span>
+                          <span>Campi configurabili: <strong className="text-cyan-400">{bp.fields.length}</strong></span>
+                          <span>Base: <strong className="text-slate-300">€{bp.base_monthly_cost}/m</strong></span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={async () => {
+                            if (confirm(`Eliminare il template '${bp.title}' dal catalogo?`)) {
+                              await fetch(`${API_BASE}/api/v1/backoffice/blueprints/${bp.id}`, { method: "DELETE", headers: authHeaders() });
+                              fetchData();
+                            }
+                          }}
+                          className="px-3 py-1.5 bg-rose-500/10 text-rose-400 border border-rose-500/30 rounded text-xs font-semibold hover:bg-rose-500/20"
+                        >
+                          Elimina Template
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* TAB 5: AUDIT LOGS */}
+            {activeTab === "audit_logs" && isAdminOrDevOps && (
+              <div>
+                <div className="mb-6">
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <i data-lucide="shield-check" className="w-5 h-5 text-emerald-400"></i>
+                    Audit Trail & Registro Immutabile
+                  </h2>
+                  <p className="text-xs text-slate-400">Tracciamento completo di tutte le operazioni di provisioning, modifiche e accessi.</p>
+                </div>
+
+                <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden font-mono text-xs">
+                  <table className="w-full text-left text-slate-300">
+                    <thead className="bg-slate-950 text-slate-400 uppercase font-bold border-b border-slate-800">
+                      <tr>
+                        <th className="p-3">Data & Ora</th>
+                        <th className="p-3">Operatore</th>
+                        <th className="p-3">Azione</th>
+                        <th className="p-3">Dettagli</th>
+                        <th className="p-3">IP Address</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {auditLogs.map(l => (
+                        <tr key={l.id} className="hover:bg-slate-800/40">
+                          <td className="p-3 text-slate-400">{l.timestamp}</td>
+                          <td className="p-3 text-indigo-400 font-bold">{l.user_email}</td>
+                          <td className="p-3">
+                            <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">
+                              {l.action}
+                            </span>
+                          </td>
+                          <td className="p-3 text-slate-300">{l.details}</td>
+                          <td className="p-3 text-slate-500">{l.ip_address}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* TAB 6: FINOPS */}
+            {activeTab === "finops" && stats && (
+              <div>
+                <div className="mb-6">
+                  <h2 className="text-xl font-bold text-white">FinOps & Risparmio Cloud</h2>
+                  <p className="text-xs text-slate-400">Analisi costi complessivi e ottimizzazione automatica TTL.</p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mb-8">
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                    <div className="text-xs font-semibold text-slate-400 uppercase mb-1">Istanze Attive Totali</div>
+                    <div className="text-3xl font-extrabold text-white">{stats.total_active_instances}</div>
+                  </div>
+                  <div className="bg-slate-900 border border-slate-800 rounded-xl p-6">
+                    <div className="text-xs font-semibold text-slate-400 uppercase mb-1">Spesa Mensile Totale</div>
+                    <div className="text-3xl font-extrabold text-indigo-400">€{stats.total_monthly_spend.toFixed(2)}</div>
+                  </div>
+                  <div className="bg-emerald-950/40 border border-emerald-500/30 rounded-xl p-6">
+                    <div className="text-xs font-semibold text-emerald-400 uppercase mb-1">Risparmio via Auto-Shutdown</div>
+                    <div className="text-3xl font-extrabold text-emerald-300">€{stats.total_savings_via_ttl.toFixed(2)}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </main>
+
+          {/* ================================================================= */}
+          {/* WIZARD AVANZATO IN 4 PASSI (NON PILOTATO) */}
+          {/* ================================================================= */}
+          {wizardBlueprint && (
+            <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden">
+                <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-indigo-500/10 text-indigo-400 flex items-center justify-center border border-indigo-500/20">
+                      <i data-lucide={wizardBlueprint.icon} className="w-5 h-5"></i>
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-base text-white">{wizardBlueprint.title}</h3>
+                      <div className="text-xs text-slate-400">Passaggio {wizardStep} di 4: {
+                        wizardStep === 1 ? "Contesto & Team" :
+                        wizardStep === 2 ? "Parametri Tecnici & Rete" :
+                        wizardStep === 3 ? "Variabili & Secret Vault" : "FinOps & Conferma"
+                      }</div>
+                    </div>
+                  </div>
+                  <button onClick={() => setWizardBlueprint(null)} className="text-slate-400 hover:text-white">
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+
+                {/* Progress bar */}
+                <div className="w-full bg-slate-800 h-1">
+                  <div className="bg-indigo-500 h-1 transition-all duration-300" style={{ width: `${(wizardStep / 4) * 100}%` }}></div>
+                </div>
+
+                <div className="p-6 overflow-y-auto space-y-4 flex-1">
+                  {/* PASSO 1: CONTESTO & TEAM */}
+                  {wizardStep === 1 && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Nome Istanza *</label>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Es. payment-db-staging"
+                          value={wizardForm.name}
+                          onChange={e => setWizardForm({ ...wizardForm, name: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Team di Assegnazione</label>
+                          <select
+                            value={wizardForm.team_id}
+                            onChange={e => {
+                              const sel = teams.find(t => t.id === e.target.value);
+                              setWizardForm({
+                                ...wizardForm,
+                                team_id: e.target.value,
+                                team_name: sel ? sel.name : "",
+                                cost_center: sel ? sel.cost_center : ""
+                              });
+                            }}
+                            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none"
+                          >
+                            {teams.map(t => (
+                              <option key={t.id} value={t.id}>{t.name} ({t.cost_center})</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Ambiente</label>
+                          <select
+                            value={wizardForm.environment}
+                            onChange={e => setWizardForm({ ...wizardForm, environment: e.target.value })}
+                            className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none"
+                          >
+                            <option value="dev">Sviluppo (Dev)</option>
+                            <option value="staging">Collaudo (Staging)</option>
+                            <option value="prod">Produzione (Prod - Richiede SecOps)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Durata Desiderata (TTL Auto-Shutdown)</label>
+                        <select
+                          value={wizardForm.ttl_days}
+                          onChange={e => setWizardForm({ ...wizardForm, ttl_days: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none"
+                        >
+                          <option value="7">7 Giorni (Ambiente temporaneo)</option>
+                          <option value="14">14 Giorni (Consigliato)</option>
+                          <option value="30">30 Giorni</option>
+                          <option value="90">90 Giorni</option>
+                        </select>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PASSO 2: PARAMETRI TECNICI CARICATI DAL DATABASE */}
+                  {wizardStep === 2 && (
+                    <div className="space-y-4">
+                      <p className="text-xs text-slate-400">Parametri tecnici specifici per {wizardBlueprint.title}:</p>
+                      {wizardBlueprint.fields.map(f => (
+                        <div key={f.name}>
+                          <label className="block text-xs font-bold text-slate-300 uppercase mb-1">{f.label}</label>
+                          {f.type === "select" ? (
+                            <select
+                              value={wizardForm.parameters[f.name] || f.default || ""}
+                              onChange={e => setWizardForm({
+                                ...wizardForm,
+                                parameters: { ...wizardForm.parameters, [f.name]: e.target.value }
+                              })}
+                              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none"
+                            >
+                              {f.options && f.options.map(opt => (
+                                <option key={opt.value} value={opt.value}>{opt.label}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <input
+                              type="text"
+                              value={wizardForm.parameters[f.name] || ""}
+                              onChange={e => setWizardForm({
+                                ...wizardForm,
+                                parameters: { ...wizardForm.parameters, [f.name]: e.target.value }
+                              })}
+                              className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white focus:outline-none"
+                            />
+                          )}
+                          <p className="text-[11px] text-slate-500 mt-1">{f.description}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* PASSO 3: VARIABILI D'AMBIENTE & SECRET VAULT */}
+                  {wizardStep === 3 && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-300 uppercase mb-1">
+                          Iniezione Segreti da HashiCorp Vault
+                        </label>
+                        <input
+                          type="text"
+                          value={wizardForm.vault_secret}
+                          onChange={e => setWizardForm({ ...wizardForm, vault_secret: e.target.value })}
+                          className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded-lg text-sm text-white font-mono"
+                        />
+                        <p className="text-[11px] text-slate-500 mt-1">Percorso del secret engine crittografato su Vault.</p>
+                      </div>
+
+                      <div>
+                        <div className="flex justify-between items-center mb-2">
+                          <label className="block text-xs font-bold text-slate-300 uppercase">
+                            Variabili d'Ambiente Personalizzate (Key / Value)
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => setWizardForm({
+                              ...wizardForm,
+                              env_vars: [...wizardForm.env_vars, { key: "", value: "" }]
+                            })}
+                            className="text-xs text-indigo-400 hover:text-indigo-300 font-bold"
+                          >
+                            + Aggiungi Variabile
+                          </button>
+                        </div>
+
+                        <div className="space-y-2">
+                          {wizardForm.env_vars.map((ev, idx) => (
+                            <div key={idx} className="flex gap-2">
+                              <input
+                                type="text"
+                                placeholder="NOME_VARIABILE"
+                                value={ev.key}
+                                onChange={e => {
+                                  const updated = [...wizardForm.env_vars];
+                                  updated[idx].key = e.target.value;
+                                  setWizardForm({ ...wizardForm, env_vars: updated });
+                                }}
+                                className="w-1/2 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded text-xs font-mono text-white"
+                              />
+                              <input
+                                type="text"
+                                placeholder="valore"
+                                value={ev.value}
+                                onChange={e => {
+                                  const updated = [...wizardForm.env_vars];
+                                  updated[idx].value = e.target.value;
+                                  setWizardForm({ ...wizardForm, env_vars: updated });
+                                }}
+                                className="w-1/2 px-3 py-1.5 bg-slate-950 border border-slate-800 rounded text-xs font-mono text-white"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* PASSO 4: RIEPILOGO, FINOPS & CONFERMA */}
+                  {wizardStep === 4 && (
+                    <div className="space-y-4 text-xs">
+                      <div className="bg-indigo-950/40 border border-indigo-500/30 rounded-xl p-4">
+                        <div className="text-xs font-bold text-indigo-300 uppercase mb-1">Costo Mensile Stimato</div>
+                        <div className="text-3xl font-extrabold text-white">€{calculateWizardCost().toFixed(2)} / mese</div>
+                        <p className="text-[11px] text-slate-400 mt-1">Imputato al centro di costo: <strong className="text-white">{wizardForm.cost_center}</strong> ({wizardForm.team_name})</p>
+                      </div>
+
+                      <div className="border border-slate-800 rounded-xl p-4 space-y-2 text-slate-300">
+                        <div className="flex justify-between"><span>Nome Risorsa:</span><strong className="text-white">{wizardForm.name}</strong></div>
+                        <div className="flex justify-between"><span>Ambiente:</span><strong className="text-white uppercase">{wizardForm.environment}</strong></div>
+                        <div className="flex justify-between"><span>Connettore Runtime:</span><strong className="text-cyan-400">{wizardBlueprint.connector_id}</strong></div>
+                        <div className="flex justify-between"><span>TTL Auto-Shutdown:</span><strong className="text-amber-400">{wizardForm.ttl_days} giorni</strong></div>
+                        <div className="flex justify-between">
+                          <span>Stato Approvazione:</span>
+                          {wizardForm.environment === "prod" || calculateWizardCost() > wizardBlueprint.auto_approval_limit_eur ? (
+                            <span className="text-amber-400 font-bold bg-amber-500/10 px-2 py-0.5 rounded">
+                              Richiede Approvazione SecOps / FinOps
+                            </span>
+                          ) : (
+                            <span className="text-emerald-400 font-bold bg-emerald-500/10 px-2 py-0.5 rounded">
+                              Auto-Approvato Istantaneamente
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex justify-between">
+                  {wizardStep > 1 ? (
+                    <button onClick={() => setWizardStep(wizardStep - 1)} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs font-semibold">
+                      Indietro
+                    </button>
+                  ) : <div></div>}
+
+                  {wizardStep < 4 ? (
+                    <button 
+                      disabled={wizardStep === 1 && !wizardForm.name.trim()}
+                      onClick={() => setWizardStep(wizardStep + 1)} 
+                      className="px-5 py-2 bg-indigo-600 disabled:bg-slate-800 text-white rounded text-xs font-bold"
+                    >
+                      Avanti
+                    </button>
+                  ) : (
+                    <button
+                      disabled={isSubmitting}
+                      onClick={handleProvisionSubmit}
+                      className="px-6 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-xs font-bold"
+                    >
+                      {isSubmitting ? "Orchestrazione in corso..." : "Esegui Provisioning"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MODALE: CREA UTENTE */}
+          {showUserModal && (
+            <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-md w-full p-6 text-slate-200">
+                <h3 className="font-bold text-base text-white mb-4">Crea Nuovo Utente Aziendale</h3>
+                <form onSubmit={handleCreateUser} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block text-slate-400 mb-1">Username</label>
+                    <input
+                      type="text"
+                      required
+                      value={newUserForm.username}
+                      onChange={e => setNewUserForm({ ...newUserForm, username: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Email</label>
+                    <input
+                      type="email"
+                      required
+                      value={newUserForm.email}
+                      onChange={e => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Password Iniziale</label>
+                    <input
+                      type="password"
+                      required
+                      value={newUserForm.password}
+                      onChange={e => setNewUserForm({ ...newUserForm, password: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Ruolo</label>
+                    <select
+                      value={newUserForm.role}
+                      onChange={e => setNewUserForm({ ...newUserForm, role: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    >
+                      <option value="developer">Developer</option>
+                      <option value="devops_lead">DevOps Lead</option>
+                      <option value="admin">Admin</option>
+                      <option value="auditor">Auditor (Compliance)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Team di Appartenenza</label>
+                    <select
+                      value={newUserForm.team_id}
+                      onChange={e => setNewUserForm({ ...newUserForm, team_id: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    >
+                      <option value="">Nessun Team</option>
+                      {teams.map(t => (
+                        <option key={t.id} value={t.id}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex justify-end gap-2 pt-3">
+                    <button type="button" onClick={() => setShowUserModal(false)} className="px-4 py-2 bg-slate-800 text-white rounded">
+                      Annulla
+                    </button>
+                    <button type="submit" className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded">
+                      Salva Utente
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODALE: CREA TEAM */}
+          {showTeamModal && (
+            <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-md w-full p-6 text-slate-200">
+                <h3 className="font-bold text-base text-white mb-4">Crea Nuovo Team / Squad</h3>
+                <form onSubmit={handleCreateTeam} className="space-y-3 text-xs">
+                  <div>
+                    <label className="block text-slate-400 mb-1">Nome Team</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Es. Mobile App Squad"
+                      value={newTeamForm.name}
+                      onChange={e => setNewTeamForm({ ...newTeamForm, name: e.target.value, slug: e.target.value.toLowerCase().replace(/ /g, "-") })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Centro di Costo</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="CC-MOBILE-05"
+                      value={newTeamForm.cost_center}
+                      onChange={e => setNewTeamForm({ ...newTeamForm, cost_center: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Email Team Lead</label>
+                    <input
+                      type="email"
+                      required
+                      placeholder="lead@azienda.com"
+                      value={newTeamForm.lead_email}
+                      onChange={e => setNewTeamForm({ ...newTeamForm, lead_email: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-slate-400 mb-1">Budget Mensile (€)</label>
+                    <input
+                      type="number"
+                      required
+                      value={newTeamForm.monthly_budget_eur}
+                      onChange={e => setNewTeamForm({ ...newTeamForm, monthly_budget_eur: parseFloat(e.target.value) })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+                  <div className="flex justify-end gap-2 pt-3">
+                    <button type="button" onClick={() => setShowTeamModal(false)} className="px-4 py-2 bg-slate-800 text-white rounded">
+                      Annulla
+                    </button>
+                    <button type="submit" className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded">
+                      Crea Team
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* MODALE: BLUEPRINT STUDIO (CREA TEMPLATE SENZA CODICE) */}
+          {showBlueprintModal && (
+            <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-md flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-xl w-full max-h-[85vh] flex flex-col p-6 text-slate-200">
+                <h3 className="font-bold text-base text-white mb-2 flex items-center gap-2">
+                  <i data-lucide="sparkles" className="w-5 h-5 text-cyan-400"></i>
+                  Blueprint Studio: Crea Nuovo Template
+                </h3>
+                <p className="text-xs text-slate-400 mb-4">Aggiungi un servizio self-service al catalogo aziendale senza toccare il codice.</p>
+
+                <form onSubmit={handleCreateBlueprint} className="space-y-4 overflow-y-auto flex-1 pr-1 text-xs">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-400 mb-1">ID Univoco (Slug)</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="k8s-helm-app"
+                        value={newBpForm.id}
+                        onChange={e => setNewBpForm({ ...newBpForm, id: e.target.value.toLowerCase().replace(/ /g, "-") })}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1">Titolo Servizio</label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="Kubernetes Helm App"
+                        value={newBpForm.title}
+                        onChange={e => setNewBpForm({ ...newBpForm, title: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-400 mb-1">Categoria</label>
+                      <select
+                        value={newBpForm.category_name}
+                        onChange={e => setNewBpForm({ ...newBpForm, category_name: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                      >
+                        <option value="Database & Storage">Database & Storage</option>
+                        <option value="Networking & Ingress">Networking & Ingress</option>
+                        <option value="Microservizi & App">Microservizi & App</option>
+                        <option value="Kubernetes & Cloud">Kubernetes & Cloud</option>
+                        <option value="CI/CD & DevSecOps">CI/CD & DevSecOps</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-slate-400 mb-1">Connettore Runtime</label>
+                      <select
+                        value={newBpForm.connector_id}
+                        onChange={e => setNewBpForm({ ...newBpForm, connector_id: e.target.value })}
+                        className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                      >
+                        <option value="docker-connector">Docker Engine Connector</option>
+                        <option value="process-connector">Local Process Connector</option>
+                        <option value="k8s-adapter">Kubernetes & Git Connector</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 mb-1">Descrizione Breve</label>
+                    <input
+                      type="text"
+                      required
+                      placeholder="Descrivi cosa fa questo template..."
+                      value={newBpForm.description}
+                      onChange={e => setNewBpForm({ ...newBpForm, description: e.target.value })}
+                      className="w-full px-3 py-2 bg-slate-950 border border-slate-800 rounded text-white"
+                    />
+                  </div>
+
+                  {/* Aggiunta Campi Dinamici */}
+                  <div className="bg-slate-950 p-4 rounded-xl border border-slate-800">
+                    <div className="font-bold text-white mb-2 flex justify-between items-center">
+                      <span>Campi Configurabili ({newBpForm.inputs.length})</span>
+                    </div>
+
+                    <div className="space-y-2 mb-3">
+                      {newBpForm.inputs.map((inp, idx) => (
+                        <div key={idx} className="bg-slate-900 p-2 rounded border border-slate-800 flex justify-between items-center text-xs">
+                          <span><strong>{inp.label}</strong> (<code>{inp.name}</code>, tipo: {inp.input_type})</span>
+                          <button
+                            type="button"
+                            onClick={() => setNewBpForm({ ...newBpForm, inputs: newBpForm.inputs.filter((_, i) => i !== idx) })}
+                            className="text-rose-400"
+                          >
+                            Rimuovi
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 mb-2">
+                      <input
+                        type="text"
+                        placeholder="Nome Campo (es. db_name)"
+                        value={newInputField.name}
+                        onChange={e => setNewInputField({ ...newInputField, name: e.target.value })}
+                        className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded text-white text-xs"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Etichetta (es. Nome Database)"
+                        value={newInputField.label}
+                        onChange={e => setNewInputField({ ...newInputField, label: e.target.value })}
+                        className="px-2.5 py-1.5 bg-slate-900 border border-slate-800 rounded text-white text-xs"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAddInputField}
+                      className="w-full py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded font-semibold text-xs"
+                    >
+                      + Aggiungi Campo al Form
+                    </button>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button type="button" onClick={() => setShowBlueprintModal(false)} className="px-4 py-2 bg-slate-800 text-white rounded">
+                      Annulla
+                    </button>
+                    <button type="submit" className="px-5 py-2 bg-cyan-600 hover:bg-cyan-500 text-white font-bold rounded">
+                      Salva & Pubblica nel Catalogo
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* 2FA SETUP MODAL */}
+          {show2FAModal && setup2FAData && (
+            <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-md w-full p-6 text-slate-200">
+                <div className="flex justify-between items-center mb-4">
+                  <div className="flex items-center gap-2 text-white font-bold text-sm">
+                    <i data-lucide="shield-check" className="w-5 h-5 text-indigo-400"></i>
+                    Attiva 2FA (Google / Microsoft Authenticator)
+                  </div>
+                  <button onClick={() => setShow2FAModal(false)} className="text-slate-400 hover:text-white">
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+                <p className="text-xs text-slate-400 mb-3">Inserisci questa chiave segreta nella tua app Authenticator:</p>
+                <div className="bg-slate-950 border border-indigo-500/40 rounded-lg p-3 text-center mb-4">
+                  <code className="text-base text-indigo-300 font-bold select-all">{setup2FAData.secret}</code>
+                </div>
+                <div className="mb-4">
+                  <label className="block text-xs font-bold text-slate-300 uppercase mb-1">Codice generato a 6 cifre</label>
+                  <input
+                    type="text"
+                    maxLength="6"
+                    placeholder="123456"
+                    value={verifySetupCode}
+                    onChange={e => setVerifySetupCode(e.target.value.trim())}
+                    className="w-full text-center text-xl font-mono py-2 bg-slate-950 border border-slate-700 rounded-lg text-white"
+                  />
+                </div>
+                <div className="flex justify-end gap-2">
+                  <button onClick={() => setShow2FAModal(false)} className="px-4 py-2 bg-slate-800 text-white rounded text-xs">Annulla</button>
+                  <button onClick={handleConfirm2FAEnable} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded text-xs">Abilita 2FA</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* LOGS MODAL */}
+          {viewingLogsInstance && (
+            <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden text-slate-200">
+                <div className="px-6 py-4 border-b border-slate-800 flex justify-between items-center bg-slate-950">
+                  <div className="font-bold text-sm text-white flex items-center gap-2">
+                    <i data-lucide="terminal" className="w-4 h-4 text-indigo-400"></i>
+                    Audit & Live Logs: {viewingLogsInstance.name}
+                  </div>
+                  <button onClick={() => setViewingLogsInstance(null)} className="text-slate-400 hover:text-white">
+                    <i data-lucide="x" className="w-5 h-5"></i>
+                  </button>
+                </div>
+                <div className="p-6 font-mono text-xs overflow-y-auto space-y-2 bg-slate-950 flex-1">
+                  {viewingLogsInstance.logs && viewingLogsInstance.logs.map((l, idx) => (
+                    <div key={idx} className="text-slate-300 border-l-2 border-indigo-500/50 pl-2">{l}</div>
+                  ))}
+                </div>
+                <div className="px-6 py-3 bg-slate-950 border-t border-slate-800 text-right">
+                  <button onClick={() => setViewingLogsInstance(null)} className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded text-xs">Chiudi</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <footer className="bg-slate-900 border-t border-slate-800 py-6 text-center text-xs text-slate-500">
+            Enterprise Service Instantiator Platform &bull; PostgreSQL 16 &bull; Multi-Tenant IAM &bull; Dynamic Blueprint Studio
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
