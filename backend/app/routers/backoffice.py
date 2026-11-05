@@ -1,22 +1,39 @@
+# ==============================================================================
+# ROUTERS/BACKOFFICE.PY - Router API Backoffice Enterprise & IAM
+# Gestione Utenti, Assegnazione Team & Budget FinOps, Blueprint Studio e Audit Trail
+# ==============================================================================
+
+# Costruttori di rotte, dependency injection, gestione eccezioni e codici HTTP
 from fastapi import APIRouter, Depends, HTTPException, status
+# Sessione del database relazionale SQLAlchemy
 from sqlalchemy.orm import Session
+# Modelli Pydantic per la validazione delle richieste
 from pydantic import BaseModel
+# Tipizzazione Python
 from typing import List, Optional, Dict, Any
+# Serializzazione JSON
 import json
+# Generazione identificatori UUID
 import uuid
 
+# Dependency injection database
 from ..database import get_db
+# Modelli ORM del database
 from ..db_models import User, Team, BlueprintModel, BlueprintInput, AuditLog, InstanceRecord
+# Hashing password, utente corrente e guardrails di autorizzazione basati su ruoli (RBAC)
 from ..auth import hash_password, get_current_user, require_roles
+# Funzione per la registrazione di log di audit
 from ..services.storage import log_audit
 
+# Istanziazione del router con prefisso di percorso e tag OpenAPI
 router = APIRouter(prefix="/api/v1/backoffice", tags=["Enterprise Backoffice & IAM"])
 
-# -------------------------------------------------------------------------
-# SCHEMI PYDANTIC
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# SCHEMI PYDANTIC PER LE RICHIESTE DI BACKOFFICE
+# ------------------------------------------------------------------------------
 
 class UserCreateRequest(BaseModel):
+    """Payload per la creazione di un nuovo utente con ruolo e team assegnati."""
     username: str
     email: str
     password: str
@@ -25,6 +42,7 @@ class UserCreateRequest(BaseModel):
 
 
 class UserUpdateRequest(BaseModel):
+    """Payload per l'aggiornamento del profilo utente, ruolo o reset 2FA."""
     role: Optional[str] = None
     team_id: Optional[str] = None
     is_active: Optional[bool] = None
@@ -32,6 +50,7 @@ class UserUpdateRequest(BaseModel):
 
 
 class TeamCreateRequest(BaseModel):
+    """Payload per la creazione di un nuovo team con centro di costo e budget mensile."""
     name: str
     slug: str
     cost_center: str
@@ -41,6 +60,7 @@ class TeamCreateRequest(BaseModel):
 
 
 class BlueprintInputFieldDTO(BaseModel):
+    """Definizione di un campo dinamico configurabile per un nuovo Blueprint."""
     name: str
     label: str
     input_type: str  # text, select, number, boolean, secret_vault
@@ -52,6 +72,7 @@ class BlueprintInputFieldDTO(BaseModel):
 
 
 class BlueprintCreateRequest(BaseModel):
+    """Payload per la pubblicazione di un nuovo template di infrastruttura dal Blueprint Studio."""
     id: str  # es. "k8s-helm-release"
     title: str
     category_name: str
@@ -66,15 +87,20 @@ class BlueprintCreateRequest(BaseModel):
     inputs: List[BlueprintInputFieldDTO] = []
 
 
-# -------------------------------------------------------------------------
-# 1. GESTIONE UTENTI (USER MANAGEMENT)
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 1. GESTIONE UTENTI (IAM & USER MANAGEMENT)
+# ------------------------------------------------------------------------------
 
 @router.get("/users", summary="Elenco utenti con ruoli e team")
 def list_users(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead", "auditor"]))
 ):
+    """
+    Ritorna l'elenco completo degli utenti aziendali con team di appartenenza,
+    stato di attivazione, configurazione 2FA e data di registrazione.
+    Riservato ai ruoli: admin, devops_lead, auditor.
+    """
     users = db.query(User).all()
     result = []
     for u in users:
@@ -100,6 +126,10 @@ def create_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead"]))
 ):
+    """
+    Crea un nuovo utente aziendale, ne calcola l'hash della password con PBKDF2
+    e registra l'evento nel registro immutabile di audit.
+    """
     existing = db.query(User).filter((User.email == req.email) | (User.username == req.username)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email o Username già esistenti.")
@@ -117,6 +147,7 @@ def create_user(
     db.commit()
     db.refresh(new_user)
 
+    # Scrittura nel registro di audit
     log_audit(current_user.email, "USER_CREATED", new_user.id, f"Creato utente {new_user.email} con ruolo {new_user.role}")
     return {"status": "SUCCESS", "message": f"Utente {new_user.username} creato con successo.", "user_id": new_user.id}
 
@@ -128,6 +159,10 @@ def update_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead"]))
 ):
+    """
+    Consente agli amministratori di modificare il ruolo RBAC, associare l'utente a un altro team
+    o resettare la chiave 2FA in caso di smarrimento del dispositivo mobile.
+    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Utente non trovato.")
@@ -153,6 +188,9 @@ def delete_user(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin"]))
 ):
+    """
+    Elimina un account utente. Impedisce all'amministratore di eliminare il proprio account.
+    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="Utente non trovato.")
@@ -166,21 +204,25 @@ def delete_user(
     return {"status": "SUCCESS", "message": f"Utente {email} eliminato."}
 
 
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 # 2. GESTIONE TEAM & SQUAD (MULTI-TENANCY & FINOPS BUDGET)
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
 
 @router.get("/teams", summary="Elenco team con statistiche di budget e membri")
 def list_teams(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead", "auditor"]))
 ):
+    """
+    Calcola per ciascun team il consumo di budget in tempo reale,
+    la percentuale di utilizzo rispetto al budget massimo e il numero di membri.
+    """
     teams = db.query(Team).all()
     result = []
     for t in teams:
         members_count = len(t.users)
         instances_count = db.query(InstanceRecord).filter(InstanceRecord.cost_center == t.cost_center).count()
-        # Calcolo spesa corrente
+        # Calcolo spesa corrente delle istanze attive assegnate al centro di costo del team
         team_instances = db.query(InstanceRecord).filter(InstanceRecord.cost_center == t.cost_center).all()
         current_spend = sum(i.monthly_cost for i in team_instances if i.status in ["ACTIVE", "PROVISIONING"])
 
@@ -206,6 +248,7 @@ def create_team(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead"]))
 ):
+    """Crea un nuovo reparto/squad con relativo centro di costo per le policy FinOps."""
     existing = db.query(Team).filter((Team.name == req.name) | (Team.slug == req.slug)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Team con questo nome o slug già esistente.")
@@ -226,15 +269,16 @@ def create_team(
     return {"status": "SUCCESS", "message": f"Team {new_team.name} creato.", "team_id": new_team.id}
 
 
-# -------------------------------------------------------------------------
-# 3. BLUEPRINT STUDIO (CREAZIONE TEMPLATE SENZA CODICE)
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 3. BLUEPRINT STUDIO (CREAZIONE TEMPLATE DINAMICI NO-CODE)
+# ------------------------------------------------------------------------------
 
 @router.get("/blueprints", summary="Elenco completo dei Blueprint dal database")
 def list_backoffice_blueprints(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead"]))
 ):
+    """Restituisce tutti i blueprint con i dettagli completi dei campi di input per l'editor."""
     models = db.query(BlueprintModel).all()
     result = []
     for m in models:
@@ -276,6 +320,10 @@ def create_blueprint(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead"]))
 ):
+    """
+    Crea e pubblica un nuovo template di infrastruttura con form dinamico personalizzato.
+    I nuovi blueprint compaiono immediatamente nel catalogo degli sviluppatori senza riavviare il backend.
+    """
     existing = db.query(BlueprintModel).filter(BlueprintModel.id == req.id).first()
     if existing:
         raise HTTPException(status_code=400, detail=f"Un blueprint con ID '{req.id}' esiste già.")
@@ -297,7 +345,7 @@ def create_blueprint(
     db.add(bp)
     db.commit()
 
-    # Inserimento campi dinamici
+    # Inserimento dei campi di input dinamici
     order = 1
     for inp in req.inputs:
         new_inp = BlueprintInput(
@@ -325,6 +373,7 @@ def delete_blueprint(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin"]))
 ):
+    """Elimina un blueprint e i suoi campi di input associati dal catalogo."""
     bp = db.query(BlueprintModel).filter(BlueprintModel.id == bp_id).first()
     if not bp:
         raise HTTPException(status_code=404, detail="Blueprint non trovato.")
@@ -336,15 +385,18 @@ def delete_blueprint(
     return {"status": "SUCCESS", "message": f"Blueprint '{title}' eliminato con successo."}
 
 
-# -------------------------------------------------------------------------
-# 4. AUDIT TRAIL LOGS
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# 4. AUDIT TRAIL LOGS (CONFORMITÀ E TRACCIABILITÀ COMPLIANCE)
+# ------------------------------------------------------------------------------
 
 @router.get("/audit-logs", summary="Registro immutabile degli eventi di audit")
 def list_audit_logs(
     db: Session = Depends(get_db),
     current_user: User = Depends(require_roles(["admin", "devops_lead", "auditor"]))
 ):
+    """
+    Restituisce gli ultimi 150 log di audit immutabili per controlli di conformità e sicurezza.
+    """
     logs = db.query(AuditLog).order_by(AuditLog.id.desc()).limit(150).all()
     return [{
         "id": l.id,

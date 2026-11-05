@@ -1,9 +1,18 @@
+# Framework web asincrono moderno ad alte prestazioni con OpenAPI e validazione Pydantic
 fastapi>=0.110.0
+# Server web ASGI per l'esecuzione in produzione e sviluppo con supporto reload
 uvicorn>=0.28.0
+# Libreria per validazione e serializzazione dei dati tramite modelli tipizzati
 pydantic>=2.6.0
+# Parser per gestire form-data multipart (upload file e form di autenticazione)
 python-multipart>=0.0.9
+# ORM e SQL toolkit relazionale per Python (supporto SQLAlchemy 2.0 Core e ORM)
 sqlalchemy>=2.0.0
+# Driver database binario per comunicare nativamente con PostgreSQL
 psycopg2-binary>=2.9.9
+# Libreria per generare e verificare codici 2FA basati su tempo TOTP (RFC 6238)
 pyotp>=2.9.0
+# Libreria per la creazione e decodifica sicura di token JSON Web Token (JWT)
 pyjwt>=2.8.0
+# Debugger remoto Python ufficiale compatibile con Visual Studio Code e PyCharm
 debugpy>=1.8.0

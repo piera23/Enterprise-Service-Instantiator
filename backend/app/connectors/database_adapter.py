@@ -1,19 +1,37 @@
+# ==============================================================================
+# DATABASE_ADAPTER.PY - Connettore Enterprise Database as a Service (DBaaS)
+# Simula provisioning di cluster PostgreSQL / MySQL / Redis con HashiCorp Vault
+# ==============================================================================
+
+# Programmazione asincrona
 import asyncio
+# Generazione identificatori e credenziali complesse
 import uuid
+# Tipizzazione Python
 from typing import Dict, Any, Tuple
+# Classe base astratta per connettori
 from .base import BaseConnector
 
 
 class DatabaseAdapter(BaseConnector):
+    """
+    Interfaccia per Database as a Service (PostgreSQL / MySQL / Redis) con Vault.
+    Configura storage crittografato AES-256, replica sincrona, backup e salvataggio chiavi su Vault.
+    """
     id = "database-adapter"
     name = "Enterprise Database Connector"
     platform_type = "database"
     description = "Interfaccia per Database as a Service (PostgreSQL / MySQL / Redis) con Vault"
 
     def validate_parameters(self, parameters: Dict[str, Any]) -> Tuple[bool, str]:
+        """Verifica la validità dei parametri del database."""
         return True, "Parametri database validi"
 
     def calculate_cost(self, base_cost: float, parameters: Dict[str, Any]) -> float:
+        """
+        Calcola il costo mensile in base al dimensionamento (small, medium, large)
+        e alla policy di retention dei backup (30 giorni aggiunge un +20%).
+        """
         cost = base_cost
         size = parameters.get("db_size", "small")
         if size == "medium":
@@ -33,6 +51,13 @@ class DatabaseAdapter(BaseConnector):
         parameters: Dict[str, Any],
         progress_callback=None
     ) -> Dict[str, Any]:
+        """
+        Esegue il workflow di provisioning di un cluster di database enterprise:
+        1. Allocazione storage cifrato AES-256
+        2. Configurazione cluster PostgreSQL 16.2
+        3. Generazione credenziali minime e archiviazione su HashiCorp Vault
+        4. Attivazione snapshot e repliche
+        """
         slug = name.lower().replace(" ", "_").replace("-", "_")
         steps = [
             (20, "Allocazione storage crittografato AES-256..."),
@@ -47,6 +72,7 @@ class DatabaseAdapter(BaseConnector):
             if progress_callback:
                 await progress_callback(pct, msg)
 
+        # Creazione dei parametri tecnici del database
         db_name = f"db_{slug}"
         db_user = f"usr_{slug[:10]}"
         db_pass = f"PgSecure_{uuid.uuid4().hex[:12]}#"
@@ -79,6 +105,7 @@ class DatabaseAdapter(BaseConnector):
         action: str,
         parameters: Dict[str, Any] = None
     ) -> Dict[str, Any]:
+        """Esegue azioni Day-2 sul database (snapshot di backup immediato o reload graceful)."""
         await asyncio.sleep(1.5)
         if action == "backup":
             snapshot_id = f"snap-{uuid.uuid4().hex[:8]}"
@@ -91,5 +118,6 @@ class DatabaseAdapter(BaseConnector):
         return {"status": "SUCCESS", "message": f"Azione {action} completata."}
 
     async def destroy(self, instance_id: str) -> bool:
+        """Esegue la dismissione del database e la revoca dei segreti da Vault."""
         await asyncio.sleep(1.2)
         return True

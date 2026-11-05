@@ -1,8 +1,20 @@
+# ==============================================================================
+# STORAGE.PY - Layer di Persistenza Dati e Seeding Iniziale Database
+# Gestisce creazione tabelle, popolamento dati iniziali, query ORM e mapping modelli
+# ==============================================================================
+
+# Modulo standard per la manipolazione di stringhe JSON
 import json
+# Generazione di UUIDv4 per identificativi univoci
 import uuid
+# Gestione dei timestamp data e ora
 from datetime import datetime
+# Tipizzazione Python
 from typing import List, Optional, Dict, Any
+
+# Connessione al database, factory sessioni e metadata base
 from ..database import SessionLocal, engine, Base
+# Modelli delle tabelle relazionali SQLAlchemy
 from ..db_models import (
     Organization,
     Team,
@@ -14,18 +26,26 @@ from ..db_models import (
     ApprovalRequest,
     AuditLog
 )
+# Modelli Pydantic per scambio dati API
 from ..models import Instance, InstanceStatus, EnvironmentEnum, Blueprint, BlueprintField, BlueprintFieldOption
+# Funzione per l'hashing sicuro delle password
 from ..auth import hash_password
 
-# Crea tutte le tabelle nel database
+# Creazione automatica di tutte le tabelle nel database relazionale all'importazione
 Base.metadata.create_all(bind=engine)
 
 
 def init_db_seeds():
-    """Popola l'organizzazione, i team, gli utenti e i Blueprint con campi dinamici reali."""
+    """
+    Popola l'organizzazione principale, i team aziendali con budget FinOps,
+    gli utenti enterprise con ruoli differenziati e i template Blueprint con campi dinamici.
+    Viene eseguita in modo idempotente: inserisce i record solo se non esistono già.
+    """
     db = SessionLocal()
     try:
-        # 1. Organizzazione
+        # ----------------------------------------------------------------------
+        # 1. ORGANIZZAZIONE ROOT
+        # ----------------------------------------------------------------------
         org = db.query(Organization).first()
         if not org:
             org = Organization(name="Enterprise Digital Corp", slug="enterprise-digital-corp")
@@ -33,7 +53,9 @@ def init_db_seeds():
             db.commit()
             db.refresh(org)
 
-        # 2. Team aziendali con budget FinOps
+        # ----------------------------------------------------------------------
+        # 2. TEAM AZIENDALI CON LIMITI FINOPS E CENTRI DI COSTO
+        # ----------------------------------------------------------------------
         teams_data = [
             ("Platform & DevOps Core", "platform-devops", "CC-DEVOPS-01", "devops@azienda.com", 5000.0, 50),
             ("E-Commerce Squad", "ecommerce-squad", "CC-ECOM-02", "ecom-lead@azienda.com", 2500.0, 25),
@@ -58,7 +80,9 @@ def init_db_seeds():
                 db.refresh(t)
             team_map[slug] = t
 
-        # 3. Utenti Enterprise
+        # ----------------------------------------------------------------------
+        # 3. UTENTI ENTERPRISE CON RUOLI RBAC
+        # ----------------------------------------------------------------------
         users_seed = [
             ("admin_devops", "admin@azienda.com", "AdminPass123!", "admin", team_map.get("platform-devops").id),
             ("devops_lead", "devops.lead@azienda.com", "DevOpsPass123!", "devops_lead", team_map.get("platform-devops").id),
@@ -81,7 +105,9 @@ def init_db_seeds():
                 db.add(u)
                 db.commit()
 
-        # 4. Blueprint Dinamici Reali (Non Cablati)
+        # ----------------------------------------------------------------------
+        # 4. BLUEPRINT DINAMICI REALI DEL CATALOGO (BLUEPRINT STUDIO)
+        # ----------------------------------------------------------------------
         blueprints_seed = [
             {
                 "id": "postgres-enterprise",
@@ -292,6 +318,7 @@ def init_db_seeds():
             }
         ]
 
+        # Inserimento dei blueprint e dei rispettivi campi dinamici
         for bp_dict in blueprints_seed:
             bp = db.query(BlueprintModel).filter(BlueprintModel.id == bp_dict["id"]).first()
             if not bp:
@@ -312,7 +339,7 @@ def init_db_seeds():
                 db.add(bp)
                 db.commit()
 
-                # Aggiunta campi di input
+                # Aggiunta dei campi di input associati
                 for inp_dict in bp_dict["inputs"]:
                     inp = BlueprintInput(
                         blueprint_id=bp.id,
@@ -332,14 +359,19 @@ def init_db_seeds():
         db.close()
 
 
+# Inizializzazione immediata all'importazione
 init_db_seeds()
 
 
-# -------------------------------------------------------------------------
-# FUNZIONI DI ACCESSO AI DATI E MAPPATURA
-# -------------------------------------------------------------------------
+# ------------------------------------------------------------------------------
+# FUNZIONI DI QUERY E MAPPATURA (DB RELAZIONALE <-> MODELLI PYDANTIC)
+# ------------------------------------------------------------------------------
 
 def get_all_blueprints_from_db() -> List[Blueprint]:
+    """
+    Legge tutti i Blueprint pubblicati dal database e li converte
+    in modelli Pydantic validati pronti per essere restituiti dall'API.
+    """
     db = SessionLocal()
     try:
         models = db.query(BlueprintModel).filter(BlueprintModel.is_published == True).all()
@@ -384,6 +416,7 @@ def get_all_blueprints_from_db() -> List[Blueprint]:
 
 
 def get_blueprint_by_id_from_db(bp_id: str) -> Optional[Blueprint]:
+    """Recupera un singolo blueprint per ID convertendolo nel modello Pydantic."""
     bps = get_all_blueprints_from_db()
     for bp in bps:
         if bp.id == bp_id:
@@ -392,6 +425,7 @@ def get_blueprint_by_id_from_db(bp_id: str) -> Optional[Blueprint]:
 
 
 def record_to_instance(rec: InstanceRecord) -> Instance:
+    """Funzione di mapping: converte un record SQLAlchemy InstanceRecord in un modello Pydantic Instance."""
     return Instance(
         id=rec.id,
         blueprint_id=rec.blueprint_id,
@@ -420,6 +454,7 @@ def record_to_instance(rec: InstanceRecord) -> Instance:
 
 
 def get_all_instances() -> List[Instance]:
+    """Recupera tutte le istanze salvate nel database ordinate per data di creazione decrescente."""
     db = SessionLocal()
     try:
         records = db.query(InstanceRecord).order_by(InstanceRecord.created_at.desc()).all()
@@ -429,6 +464,7 @@ def get_all_instances() -> List[Instance]:
 
 
 def get_instance_by_id(instance_id: str) -> Optional[Instance]:
+    """Cerca e restituisce un'istanza in base al suo ID univoco."""
     db = SessionLocal()
     try:
         rec = db.query(InstanceRecord).filter(InstanceRecord.id == instance_id).first()
@@ -438,6 +474,10 @@ def get_instance_by_id(instance_id: str) -> Optional[Instance]:
 
 
 def upsert_instance(instance: Instance):
+    """
+    Esegue l'operazione di inserimento o aggiornamento (UPSERT) di un'istanza nel database.
+    Se il record esiste lo aggiorna, altrimenti ne crea uno nuovo.
+    """
     db = SessionLocal()
     try:
         rec = db.query(InstanceRecord).filter(InstanceRecord.id == instance.id).first()
@@ -445,6 +485,7 @@ def upsert_instance(instance: Instance):
             rec = InstanceRecord(id=instance.id)
             db.add(rec)
 
+        # Aggiornamento campi scalari
         rec.blueprint_id = instance.blueprint_id
         rec.blueprint_title = instance.blueprint_title
         rec.category = instance.category
@@ -462,6 +503,8 @@ def upsert_instance(instance: Instance):
         rec.expires_at = instance.expires_at
         rec.ttl_days = instance.ttl_days
         rec.monthly_cost = instance.monthly_cost
+
+        # Aggiornamento campi strutturati convertiti in JSON
         rec.endpoints = instance.endpoints
         rec.credentials = instance.credentials
         rec.parameters = instance.parameters
@@ -474,6 +517,7 @@ def upsert_instance(instance: Instance):
 
 
 def remove_instance(instance_id: str) -> bool:
+    """Elimina definitivamente il record di un'istanza dal database."""
     db = SessionLocal()
     try:
         rec = db.query(InstanceRecord).filter(InstanceRecord.id == instance_id).first()
@@ -487,6 +531,10 @@ def remove_instance(instance_id: str) -> bool:
 
 
 def log_audit(user_email: str, action: str, resource_id: str = None, details: str = None, ip_address: str = "127.0.0.1"):
+    """
+    Registra in modo immutabile un'operazione critica nella tabella audit_logs.
+    Traccia l'utente, l'azione compiuta, la risorsa impattata, dettagli e l'indirizzo IP.
+    """
     db = SessionLocal()
     try:
         log = AuditLog(

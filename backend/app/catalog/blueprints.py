@@ -1,8 +1,18 @@
+# ==============================================================================
+# BLUEPRINTS.PY - Definizione Statica Template e Blueprint del Catalogo
+# Contiene i modelli e le opzioni dei servizi provisionabili per fallback e test
+# ==============================================================================
+
+# Tipizzazione Python per liste e opzionali
 from typing import List, Optional
+# Schemi Pydantic per blueprint e campi dinamici
 from ..models import Blueprint, BlueprintField, BlueprintFieldOption
 
+# Elenco completo dei Blueprint enterprise preconfigurati nel catalogo
 BLUEPRINTS: List[Blueprint] = [
+    # --------------------------------------------------------------------------
     # 1. DATABASE & STORAGE
+    # --------------------------------------------------------------------------
     Blueprint(
         id="postgres-enterprise",
         title="PostgreSQL 16 Enterprise Cluster",
@@ -81,7 +91,9 @@ BLUEPRINTS: List[Blueprint] = [
         day2_actions=["restart", "stop", "start", "extend_ttl"]
     ),
 
+    # --------------------------------------------------------------------------
     # 2. NETWORKING, INGRESS & WEB
+    # --------------------------------------------------------------------------
     Blueprint(
         id="nginx-ingress-proxy",
         title="Nginx Reverse Proxy & Ingress Controller",
@@ -121,7 +133,9 @@ BLUEPRINTS: List[Blueprint] = [
         day2_actions=["restart", "stop", "start", "extend_ttl"]
     ),
 
-    # 3. CLOUD-NATIVE MICROSERVICES
+    # --------------------------------------------------------------------------
+    # 3. MICROSERVIZI CLOUD-NATIVE
+    # --------------------------------------------------------------------------
     Blueprint(
         id="fastapi-microservice",
         title="Python Cloud-Native Microservice (FastAPI)",
@@ -150,7 +164,9 @@ BLUEPRINTS: List[Blueprint] = [
         day2_actions=["restart", "stop", "extend_ttl"]
     ),
 
+    # --------------------------------------------------------------------------
     # 4. CI/CD & GITOPS
+    # --------------------------------------------------------------------------
     Blueprint(
         id="cicd-pipeline-scaffold",
         title="Pipeline CI/CD con SonarQube & Trivy Security",
@@ -185,7 +201,9 @@ BLUEPRINTS: List[Blueprint] = [
         day2_actions=["extend_ttl"]
     ),
 
-    # 5. OBSERVABILITY & MONITORING
+    # --------------------------------------------------------------------------
+    # 5. OBSERVABILITY & MONITORAGGIO
+    # --------------------------------------------------------------------------
     Blueprint(
         id="observability-stack",
         title="Stack Monitoraggio & Metriche (Prometheus)",
@@ -213,7 +231,9 @@ BLUEPRINTS: List[Blueprint] = [
         day2_actions=["restart", "stop", "extend_ttl"]
     ),
 
-    # 6. KUBERNETES TENANT
+    # --------------------------------------------------------------------------
+    # 6. KUBERNETES TENANT MULTI-SQUAD
+    # --------------------------------------------------------------------------
     Blueprint(
         id="k8s-namespace-tenant",
         title="Kubernetes Namespace Isolato (Multi-Tenant)",
@@ -249,6 +269,7 @@ BLUEPRINTS: List[Blueprint] = [
 
 
 def get_blueprint_by_id(blueprint_id: str) -> Optional[Blueprint]:
+    """Cerca e restituisce il blueprint corrispondente dall'elenco statico di default."""
     for bp in BLUEPRINTS:
         if bp.id == blueprint_id:
             return bp

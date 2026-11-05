@@ -1,53 +1,78 @@
+# ==============================================================================
+# DOCKER-COMPOSE.YML - Enterprise Service Instantiator (ESI)
+# Orchestrazione dello stack di produzione/sviluppo: PostgreSQL + Piattaforma Python
+# ==============================================================================
 version: '3.8'
 
 services:
+  # ----------------------------------------------------------------------------
   # DATABASE POSTGRESQL PRINCIPALE
+  # RDBMS per la memorizzazione di utenti, team, blueprint dinamici, log di audit e istanze
+  # ----------------------------------------------------------------------------
   postgres:
+    # Immagine ufficiale leggera basata su Alpine Linux
     image: postgres:16-alpine
     container_name: esi-postgres
+    # Riavvio automatico in caso di crash o riavvio del server host
     restart: unless-stopped
+    # Credenziali e nome del database principale
     environment:
       POSTGRES_USER: esi_admin
       POSTGRES_PASSWORD: esi_secure_pass123
       POSTGRES_DB: esi_database
+    # Mappatura porta PostgreSQL verso l'host (porta 5432)
     ports:
       - "5432:5432"
+    # Persistenza permanente dei dati sul volume dedicato dell'host
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    # Healthcheck periodico: verifica che PostgreSQL sia effettivamente pronto a ricevere query
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U esi_admin -d esi_database"]
       interval: 5s
       timeout: 5s
       retries: 5
 
+  # ----------------------------------------------------------------------------
   # PIATTAFORMA ISTANZIATORE CON SUPPORTO DEBUG HOT-RELOAD & DEBUGPY
+  # Backend FastAPI, API RESTful Swagger, Motore Policy FinOps e connettori runtime
+  # ----------------------------------------------------------------------------
   istanziatore:
+    # Build a partire dal Dockerfile nella cartella radice
     build:
       context: .
       dockerfile: Dockerfile
     container_name: esi-platform
     restart: unless-stopped
+    # Dipendenza con attesa esplicita dello stato 'healthy' del database PostgreSQL
     depends_on:
       postgres:
         condition: service_healthy
+    # Esposizione delle porte di servizio e dei range dinamici per le risorse istanziate
     ports:
-      - "8080:8080"              # Portale Web & API Swagger
-      - "5678:5678"              # Porta Debugger Remoto (VS Code / PyCharm debugpy)
-      - "8100-8150:8100-8150"    # Porte dinamiche container Docker istanziati
-      - "8200-8250:8200-8250"    # Porte dinamiche servizi web locali
+      - "8080:8080"              # Portale Web & Documentazione API interattiva (Swagger UI)
+      - "5678:5678"              # Porta per il debugger remoto debugpy (attacco da VS Code / PyCharm)
+      - "8100-8150:8100-8150"    # Range di porte TCP per container Docker generati on-demand
+      - "8200-8250:8200-8250"    # Range di porte TCP per processi e microservizi locali dedicati
     environment:
+      # Stringa di connessione JDBC/SQLAlchemy verso il container postgres
       - DATABASE_URL=postgresql://esi_admin:esi_secure_pass123@postgres:5432/esi_database
+      # Chiave crittografica aziendale per la firma e la validazione dei token JWT
       - JWT_SECRET_KEY=esi-super-secret-jwt-key-2026-enterprise-grade
-      - DEBUG_MODE=true          # Abilita debugger remoto su porta 5678 e hot-reload
-      - RELOAD=true              # Ricaricamento automatico del codice alle modifiche
+      # Abilita il server di debug remoto debugpy sulla porta 5678
+      - DEBUG_MODE=true
+      # Attiva il ricaricamento a caldo del codice Python senza necessità di ricreare l'immagine
+      - RELOAD=true
+      # Disabilita il buffering dello stdout Python per visualizzare i log istantaneamente
       - PYTHONUNBUFFERED=1
     volumes:
-      # Socket Docker dell'host per orchestratore container reale (DooD)
+      # Docker-out-of-Docker (DooD): accesso al socket Docker dell'host per gestire i container reali
       - /var/run/docker.sock:/var/run/docker.sock
-      # Hot-Reload del codice sorgente: le modifiche a file Python/HTML si applicano al volo senza ri-buildare!
+      # Hot-Reload del codice sorgente: montaggio diretto dei file dell'host all'interno del container
       - ./backend:/app/backend
       - ./frontend:/app/frontend
       - ./backend/data:/app/backend/data
 
+# Definizione del volume Docker con nome per i dati del database
 volumes:
   postgres_data:
